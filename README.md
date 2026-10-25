@@ -41,23 +41,20 @@ python -m kaikai_bot.live --coin BTC --tf 15m --exit A --capital 100
 
 ## データ収集を1時間ごとに自動で動かす
 
-取得の入口は1分足を直近約3.6日分しか返しません。パソコンが3日以上止まると、その間のデータは二度と取れません。
+取得の入口は1分足を直近約3.6日分しか返しません。止まっている間のデータは二度と取れないので、
+収集は GitHub の自動実行で1時間ごとに動かし、リポジトリの `data` 枝に「銘柄/日付.csv」で貯めています(ボス決定 2026-10-25)。
+パソコンでは何も登録しなくて大丈夫です。
 
-### Windows(タスクスケジューラ)
-
-リポジトリのフォルダで、次の1行を一度だけ実行します(`C:\path\to\kaikai-bot` は実際の場所に置き換え)。
-
-```
-schtasks /Create /SC HOURLY /TN kaikai-bot-collect /TR "cmd /c cd /d C:\path\to\kaikai-bot && .venv\Scripts\python.exe -m kaikai_bot.collect >> logs\collect.log 2>&1"
-```
-
-### Mac(cron)
-
-`crontab -e` で次の1行を足します(`/path/to/kaikai-bot` は実際の場所に置き換え)。
+検証や紙上運転の前に、貯まった分をパソコンの保存庫に取り込みます。
 
 ```
-5 * * * * cd /path/to/kaikai-bot && .venv/bin/python -m kaikai_bot.collect >> logs/collect.log 2>&1
+python -m kaikai_bot.collect --from-github
 ```
+
+予備としてパソコンでも集める場合(同じ足は上書きなのでぶつかりません):
+
+- Windows: `schtasks /Create /SC HOURLY /TN kaikai-bot-collect /TR "cmd /c cd /d C:\path\to\kaikai-bot && .venv\Scripts\python.exe -m kaikai_bot.collect >> logs\collect.log 2>&1"`
+- Mac: `crontab -e` で `5 * * * * cd /path/to/kaikai-bot && .venv/bin/python -m kaikai_bot.collect >> logs/collect.log 2>&1`
 
 ## 試験
 

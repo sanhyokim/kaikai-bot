@@ -1,8 +1,11 @@
 """データ収集(仕様書 5.1〜5.5)。1時間に1回 `python -m kaikai_bot.collect` で動かす。"""
 from __future__ import annotations
 
+import argparse
+import io
 import json
 import sqlite3
+import zipfile
 import sys
 import time
 from datetime import datetime, timezone
@@ -145,8 +148,124 @@ def run(stage: int | None = None, fetch=exchange.candles_1m,
     return status
 
 
+# ---------------------------------------------------------------- 日ごとのファイルの保管庫
+# GitHub の自動実行で集めた1分足を、リポジトリの data 枝に「銘柄/日付.csv」で貯める(DESIGN_NOTES 参照)。
+
+STORE_COLUMNS = ["ts_open", "open", "high", "low", "close", "volume", "trades", "fetched_at"]
+STORE_ZIP_URL = "https://github.com/sanhyokim/kaikai-bot/archive/refs/heads/data.zip"
+DAY_MS = 1440 * MINUTE_MS
+
+
+def coin_dir(coin: str) -> str:
+    """ファイル名に使えない「:」を「_」に置き換える(xyz:NVDA → xyz_NVDA)。"""
+    return coin.replace(":", "_")
+
+
+def _day_name(day_ms: int) -> str:
+    return datetime.fromtimestamp(day_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def import_csv_text(con: sqlite3.Connection, coin: str, text: str) -> int:
+    lines = text.strip().splitlines()
+    if len(lines) <= 1:
+        return 0
+    rows = []
+    for line in lines[1:]:
+        ts, o, h, lo, c, v, n, fa = line.split(",")
+        rows.append((coin, int(ts), float(o), float(h), float(lo), float(c), float(v),
+                     int(n) if n else None, int(fa)))
+    con.executemany("INSERT OR REPLACE INTO candles_1m VALUES (?,?,?,?,?,?,?,?,?)", rows)
+    con.commit()
+    return len(rows)
+
+
+def import_store(con: sqlite3.Connection, store: Path, since_ms: int | None = None) -> int:
+    """保管庫のファイルを保存庫に取り込む。since_ms があればその日以降のファイルだけ。"""
+    total = 0
+    for info in config.coins():
+        d = store / "candles" / coin_dir(info["coin"])
+        if not d.exists():
+            continue
+        for f in sorted(d.glob("*.csv")):
+            if since_ms is not None and f.stem < _day_name(since_ms // DAY_MS * DAY_MS):
+                continue
+            total += import_csv_text(con, info["coin"], f.read_text(encoding="utf-8"))
+    return total
+
+
+def export_days(con: sqlite3.Connection, coin: str, days_ms: set[int], store: Path) -> None:
+    d = store / "candles" / coin_dir(coin)
+    d.mkdir(parents=True, exist_ok=True)
+    for day in sorted(days_ms):
+        rows = con.execute(
+            "SELECT ts_open, open, high, low, close, volume, trades, fetched_at FROM candles_1m "
+            "WHERE coin=? AND ts_open >= ? AND ts_open < ? ORDER BY ts_open",
+            (coin, day, day + DAY_MS)).fetchall()
+        lines = [",".join(STORE_COLUMNS)]
+        lines += [",".join("" if x is None else repr(x) if isinstance(x, float) else str(x) for x in r)
+                  for r in rows]
+        (d / f"{_day_name(day)}.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def run_store(store: Path, fetch=exchange.candles_1m) -> dict:
+    """GitHub の自動実行用: 保管庫の直近を取り込み → 収集 → 触った日のファイルを書き戻す。"""
+    store.mkdir(parents=True, exist_ok=True)
+    db = store / "work.db"
+    if db.exists():
+        db.unlink()
+    con = connect(db)
+    import_store(con, store, since_ms=now_ms() - 3 * DAY_MS)
+    before = {i["coin"]: latest_ts(con, i["coin"]) for i in config.coins()}
+    con.close()
+    status = run(fetch=fetch, db_path=db, status_path=store / "collect_status.json",
+                 gaps_path=store / "gaps.log", alerts_path=store / "alerts.log")
+    con = connect(db)
+    for info in config.coins():
+        coin = info["coin"]
+        start = 0 if before[coin] is None else before[coin] - HOUR_MS
+        days = {r[0] for r in con.execute(
+            "SELECT DISTINCT ts_open / ? * ? FROM candles_1m WHERE coin=? AND ts_open >= ?",
+            (DAY_MS, DAY_MS, coin, start))}
+        export_days(con, coin, days, store)
+    con.close()
+    db.unlink()
+    return status
+
+
+def pull_from_github(db_path: Path = config.MARKET_DB, url: str = STORE_ZIP_URL) -> int:
+    """パソコン用: GitHub の data 枝を丸ごと取ってきて保存庫に取り込む。"""
+    import requests
+    r = requests.get(url, timeout=120)
+    r.raise_for_status()
+    con = connect(db_path)
+    total = 0
+    names = {coin_dir(i["coin"]): i["coin"] for i in config.coins()}
+    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+        for name in sorted(z.namelist()):
+            parts = name.split("/")
+            if len(parts) >= 4 and parts[-3] == "candles" and parts[-1].endswith(".csv"):
+                coin = names.get(parts[-2])
+                if coin:
+                    total += import_csv_text(con, coin, z.read(name).decode("utf-8"))
+            elif parts[-1] == "gaps.log":
+                config.GAPS_LOG.parent.mkdir(parents=True, exist_ok=True)
+                config.GAPS_LOG.write_bytes(z.read(name))
+    con.close()
+    return total
+
+
 def main() -> None:
-    run()
+    ap = argparse.ArgumentParser(description="1分足の収集")
+    ap.add_argument("--store", type=Path, help="GitHub の自動実行用: 日ごとのファイルの保管庫で収集する")
+    ap.add_argument("--from-github", action="store_true",
+                    help="GitHub に貯まった1分足をこのパソコンの保存庫に取り込む")
+    a = ap.parse_args()
+    if a.store:
+        run_store(a.store)
+    elif a.from_github:
+        print(f"{pull_from_github()}本を取り込みました")
+    else:
+        run()
 
 
 if __name__ == "__main__":
