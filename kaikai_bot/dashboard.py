@@ -83,7 +83,7 @@ def render() -> None:
                     st.write(f"{path.stem}: " + " / ".join(f"{k} {v}" for k, v in counts.items()))
                 else:
                     st.write(f"{path.stem}(中間報告。判定はしない)")
-                st.dataframe(table, hide_index=True, use_container_width=True)
+                st.dataframe(table, hide_index=True, width="stretch")
         else:
             st.info("判定表はまだありません。")
 

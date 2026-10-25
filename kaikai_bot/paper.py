@@ -319,7 +319,9 @@ def loop(targets: list[dict], once: bool = False) -> None:
     paper = connect()
     runners = [Runner(paper, t, cfg, costs, collect.now_ms()) for t in targets]
     coins = sorted({r.coin for r in runners})
-    print(f"紙上運転を開始: {len(runners)}設定(" + ", ".join(sorted({r.kind for r in runners})) + ")")
+    resumed = sum(1 for r in runners if r.last_close_ms is not None)
+    print(f"紙上運転: {len(runners)}設定(" + ", ".join(sorted({r.kind for r in runners})) + ")"
+          + (f"、うち{resumed}設定は前回の続きから" if resumed else "、新しく開始"))
     while True:
         now = collect.now_ms()
         ok = fetch_latest(market, coins, now)
