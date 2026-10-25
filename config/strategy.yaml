@@ -1,0 +1,21 @@
+# 戦略のパラメータ(仕様書 7.8)。探索は前半データでのみ行う。
+initial:
+  rci_slope_min: 20
+  rci14_max: -50
+  macd_lookback: 3
+  stop_atr: 1.0
+  take_atr: 2.0
+search:
+  rci_slope_min: [10, 15, 20, 25, 30]
+  rci14_max: [-70, -60, -50, -40]
+  macd_lookback: [1, 2, 3, 5]
+  stop_atr: [0.75, 1.0, 1.5]
+  take_atr: [1.5, 2.0, 2.5, 3.0]
+fixed:
+  max_bars: {1m: 15, 5m: 12, 15m: 8, 1h: 6}
+  round_number_margin: 0.005
+  daily_loss_limit: 0.03
+  max_consecutive_losses: 5
+# 検証用の資金と玉(仕様書 8.3)
+backtest:
+  capital: 1000.0

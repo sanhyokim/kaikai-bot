@@ -1,0 +1,14 @@
+# コストの設定値(仕様書 5.6)。率はすべて小数(0.00045 = 0.045%)。
+# 確認日: 2026-10-25
+# 出典:
+#   基本の永久先物(最下位の段): https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees
+#     taker 0.045% / maker 0.015%(初期値と同じ)
+#   trade.xyz(HIP-3 業者 xyz): https://docs.trade.xyz/trading/fees
+#     標準 taker 0.090% / maker 0.030% = 基本の2倍(初期値の倍率 2.0 と一致)
+#     「成長モード」の銘柄はさらに安いが、どの銘柄に掛かるか変わりうるので、保守的に 2.0 のままにする
+taker_fee: 0.00045
+maker_fee: 0.00015
+hip3_fee_multiplier: 2.0
+slippage_stop: 0.0002
+slippage_entry: 0.0
+funding_per_hour: 0.00001

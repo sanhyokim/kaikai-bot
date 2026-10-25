@@ -1,0 +1,16 @@
+# データ・ログ(仕様書 12.1)
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
+# 秘密鍵は絶対に入れない(仕様書 10.3)
+secret
+*.key
+.env
+.kaikai-bot/
+STOP
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/

@@ -1,0 +1,11 @@
+# 銘柄一覧(仕様書 第4章)。追加はボスの指示があった時だけ、1行足すだけで動く。
+# stage: 1=仮想通貨(第1段階) / 2=米国株 HIP-3(第2段階)
+# hip3: true なら手数料に hip3_fee_multiplier を掛け、米国市場時間のフィルタを使う
+# 表記は 2026-10-25 に API で確認済み(xyz: 付きで通る。接頭辞なしの NVDA は失敗)
+coins:
+  - {coin: BTC, stage: 1, hip3: false}
+  - {coin: ETH, stage: 1, hip3: false}
+  - {coin: SOL, stage: 1, hip3: false}
+  - {coin: "xyz:NVDA", stage: 2, hip3: true}
+  - {coin: "xyz:TSLA", stage: 2, hip3: true}
+  - {coin: "xyz:XYZ100", stage: 2, hip3: true}
