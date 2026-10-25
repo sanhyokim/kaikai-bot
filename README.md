@@ -29,6 +29,8 @@ python -m kaikai_bot.backtest --stage 1
 python -m kaikai_bot.paper
 ```
 
+(落ちたら自動で起動し直したい時は `python -m kaikai_bot.paper --watch`。紙上運転の前に `python -m kaikai_bot.collect --from-github` と `python -m kaikai_bot.backtest --stage 1` を一度実行しておく。)
+
 ```
 # 監視画面
 python -m kaikai_bot.dashboard
