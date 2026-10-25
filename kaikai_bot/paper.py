@@ -64,14 +64,17 @@ def parse_params(text: str) -> dict:
             "take_atr": float(parts[4].removeprefix("利確").removesuffix("ATR"))}
 
 
-def select_targets(judgement_csv: Path) -> list[dict]:
+def select_targets(judgement_csv: Path | list[Path]) -> list[dict]:
     """合格した設定すべて。無ければ暫定設定を1つ(仕組みの確認用。昇格の対象にしない)。
 
     暫定は、後半 PF が数字で出ている行の中で最も高いもの(9.1 は「不合格の中で」だが、
     不合格が無い時のために全行から選ぶ)。どれも数字が無ければ判定表の先頭行(1分足・BTC・出口A)。
     """
-    with open(judgement_csv, encoding="utf-8-sig") as f:
-        rows = list(csv.DictReader(f))
+    paths = judgement_csv if isinstance(judgement_csv, list) else [judgement_csv]
+    rows = []
+    for path in paths:
+        with open(path, encoding="utf-8-sig") as f:
+            rows += list(csv.DictReader(f))
     passed = [r for r in rows if r["判定"] == "合格"]
     if passed:
         return [_target(r, "合格") for r in passed]
@@ -90,12 +93,14 @@ def _target(r: dict, kind: str) -> dict:
             "params": parse_params(r["選んだパラメータ"]), "kind": kind}
 
 
-def latest_judgement(reports: Path = config.REPORTS_DIR) -> Path:
-    files = sorted(reports.glob("judgement_*.csv"))
-    files = [f for f in files if not f.stem.endswith("_hours")]
-    if not files:
-        raise SystemExit("判定表がありません。先に python -m kaikai_bot.backtest --stage 1 を実行してください")
-    return files[-1]
+def latest_judgements(reports: Path = config.REPORTS_DIR) -> list[Path]:
+    """第1段階と第2段階の、それぞれ最新の判定表(1設定だけの実行の表は使わない)。"""
+    out = []
+    for pattern in ("judgement_????-??-??.csv", "judgement_????-??-??_stage2.csv"):
+        files = sorted(reports.glob(pattern))
+        if files:
+            out.append(files[-1])
+    return out
 
 
 # ---------------------------------------------------------------- 1設定の状態
@@ -194,13 +199,16 @@ PAPER_MIN_PF_RATIO = 0.70
 PAPER_MAX_DD = 0.10
 
 
-def run_results(con: sqlite3.Connection, now_ms: int, judgement_csv: Path | None = None,
+def run_results(con: sqlite3.Connection, now_ms: int, judgement_csv: Path | list[Path] | None = None,
                 capital: float = 1000.0) -> list[dict]:
     """設定ごとの紙上の成績と、9.3 の5基準による昇格候補の印。暫定設定は候補にしない。"""
     from . import backtest as bt
     second_pf = {}
-    if judgement_csv is not None and judgement_csv.exists():
-        with open(judgement_csv, encoding="utf-8-sig") as f:
+    paths = [] if judgement_csv is None else judgement_csv if isinstance(judgement_csv, list) else [judgement_csv]
+    for path in paths:
+        if not path.exists():
+            continue
+        with open(path, encoding="utf-8-sig") as f:
             for r in csv.DictReader(f):
                 v = r["PF_後半"]
                 second_pf[run_id(r["足"], r["銘柄"], r["出口方式"])] = (
@@ -316,7 +324,10 @@ def main() -> None:
     if a.watch:
         watch(rest)
         return
-    loop(select_targets(latest_judgement()))
+    files = latest_judgements()
+    if not files:
+        raise SystemExit("判定表がありません。先に python -m kaikai_bot.backtest --stage 1 を実行してください")
+    loop(select_targets(files))
 
 
 if __name__ == "__main__":

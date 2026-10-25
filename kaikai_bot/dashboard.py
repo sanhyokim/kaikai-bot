@@ -71,21 +71,22 @@ def render() -> None:
         st.table(status_rows(now))
 
         st.header("2. 判定表")
-        csvs = sorted(p for p in config.REPORTS_DIR.glob("judgement_*.csv"))
+        csvs = paper.latest_judgements()
         if csvs:
             import pandas as pd
-            table = pd.read_csv(csvs[-1], encoding="utf-8-sig", dtype=str).fillna("")
-            counts = table["判定"].value_counts()
-            st.write(f"{csvs[-1].stem}: " + " / ".join(f"{k} {counts.get(k, 0)}" for k in
-                                                         ("合格", "不合格", "判定不能", "データ待ち")))
-            st.dataframe(table, hide_index=True, use_container_width=True)
+            for path in csvs:
+                table = pd.read_csv(path, encoding="utf-8-sig", dtype=str).fillna("")
+                counts = table["判定"].value_counts()
+                st.write(f"{path.stem}: " + " / ".join(f"{k} {counts.get(k, 0)}" for k in
+                                                        ("合格", "不合格", "判定不能", "データ待ち")))
+                st.dataframe(table, hide_index=True, use_container_width=True)
         else:
             st.info("判定表はまだありません。")
 
         st.header("3. 紙上運転の成績")
         if config.PAPER_DB.exists():
             con = paper.connect()
-            res = paper.run_results(con, now, csvs[-1] if csvs else None)
+            res = paper.run_results(con, now, csvs)
             st.table([{"設定": r["run_id"], "種類": r["kind"], "日数": f"{r['days']:.1f}", "取引回数": r["trades"],
                        "PF": bt._f(r["pf"]), "純損益(ドル)": f"{r['net']:.2f}",
                        "最大の落ち込み": bt._f(r["max_dd"], pct=True),

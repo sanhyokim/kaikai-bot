@@ -149,6 +149,6 @@ def test_reproducible(tmp_path, monkeypatch):
                       memo_dir=tmp_path / f"m{k}", date="test")
         outs.append([(r["params"], r["second"]["trades"], round(r["second"]["pf"] or 0, 6),
                       [round(t["net"], 6) for t in r["second_trades"]]) for r in rows])
-        assert (tmp_path / f"r{k}" / "judgement_test.md").exists()
+        assert (tmp_path / f"r{k}" / "judgement_test_1m_BTC_all.md").exists()
     assert outs[0] == outs[1]
-    assert (tmp_path / "r0" / "judgement_test.csv").read_bytes() == (tmp_path / "r1" / "judgement_test.csv").read_bytes()
+    assert (tmp_path / "r0" / "judgement_test_1m_BTC_all.csv").read_bytes() == (tmp_path / "r1" / "judgement_test_1m_BTC_all.csv").read_bytes()

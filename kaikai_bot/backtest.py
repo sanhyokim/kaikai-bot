@@ -311,9 +311,18 @@ def table_rows(rows: list[dict]) -> list[list[str]]:
     return out
 
 
-def write_reports(rows: list[dict], stage: int | None, out_dir: Path, date: str) -> tuple[Path, Path]:
+def report_name(date: str, stage: int | None, single: str | None = None) -> str:
+    """第1段階は judgement_<日付>(8.7)。第2段階と1設定だけの実行は、第1段階の表を上書きしないよう名前を分ける。"""
+    if single:
+        return f"judgement_{date}_{single}"
+    return f"judgement_{date}" if (stage or 1) == 1 else f"judgement_{date}_stage{stage}"
+
+
+def write_reports(rows: list[dict], stage: int | None, out_dir: Path, date: str,
+                  single: str | None = None) -> tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    md, cs = out_dir / f"judgement_{date}.md", out_dir / f"judgement_{date}.csv"
+    name = report_name(date, stage, single)
+    md, cs = out_dir / f"{name}.md", out_dir / f"{name}.csv"
     body = table_rows(rows)
     with open(cs, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
@@ -392,7 +401,11 @@ def run(stage: int | None = None, coin: str | None = None, tf: str | None = None
         db_path: Path = config.MARKET_DB, out_dir: Path = config.REPORTS_DIR, memo_dir: Path = config.MEMOS_DIR,
         date: str | None = None) -> list[dict]:
     cfg, costs, holidays = config.strategy(), config.costs(), config.us_holidays()
-    coins = [config.coin_info(coin)] if coin else config.coins(stage or 1)
+    if coin:
+        coins = [config.coin_info(coin)]
+        stage = config.coin_info(coin)["stage"]
+    else:
+        coins = config.coins(stage or 1)
     tfs = [tf] if tf else config.TIMEFRAMES
     modes = [exit_mode] if exit_mode else list(EXIT_MODES)
     con = collect.connect(db_path)
@@ -410,7 +423,10 @@ def run(stage: int | None = None, coin: str | None = None, tf: str | None = None
     con.close()
     judge(rows)
     date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    md, cs = write_reports(rows, stage, out_dir, date)
+    single = None
+    if coin or tf or exit_mode:
+        single = "_".join(x.replace(":", "_") for x in (tf or "all", coin or "all", exit_mode or "all"))
+    md, cs = write_reports(rows, stage, out_dir, date, single)
     for r in rows:
         if r["verdict"] in ("不合格", "判定不能"):
             write_memo(r, cfg, costs, memo_dir)
