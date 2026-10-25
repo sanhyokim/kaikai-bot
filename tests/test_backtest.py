@@ -88,36 +88,59 @@ def test_metrics():
     assert bt.month_share(trades) == pytest.approx(0.75)
 
 
-def _row(tf, verdict_inputs):
-    days, trades, pf1, pf2, dd, ms, avg = verdict_inputs
-    return {"tf": tf, "coin": "BTC", "exit": "A", "second_days": days,
-            "first": {"pf": pf1}, "second": {"trades": trades, "pf": pf2, "max_dd": dd,
-                                              "month_share": ms, "avg_net": avg}}
+def _row(tf, inputs, mode="formal"):
+    days, trades, pf1, pf2, dd, ms, avg = inputs
+    return {"tf": tf, "coin": "BTC", "exit": "A", "mode": mode, "second_days": days,
+            "first": {"pf": pf1} if mode == "formal" else None,
+            "eval": {"trades": trades, "pf": pf2, "max_dd": dd, "month_share": ms, "avg_net": avg}}
 
 
 def test_judge_rules():
-    good = (100, 400, 1.6, 1.5, 0.05, 0.3, 1.5)
-    rows = [_row("1m", good), _row("5m", (100, 400, 1.6, 0.85, 0.05, 0.3, 1.5)),
-            _row("15m", (100, 299, 1.6, 2.0, 0.05, 0.3, 1.5)), _row("1h", (80, 400, 1.6, 1.5, 0.05, 0.3, 1.5))]
+    rows = [_row("1m", (100, 400, 1.6, 1.5, 0.05, 0.3, 1.5)), _row("5m", (100, 400, 1.6, 0.85, 0.05, 0.3, 1.5)),
+            _row("15m", (100, 119, 1.6, 2.0, 0.05, 0.3, 1.5)), _row("1h", (80, 400, 1.6, 1.6, 0.05, 0.3, 1.5))]
     bt.judge(rows)
     v = {r["tf"]: r for r in rows}
-    assert v["1h"]["verdict"] == "データ待ち"
-    assert v["15m"]["verdict"] == "判定不能"
+    assert v["1h"]["verdict"] == "データ待ち"        # 後半90日未満(回数より先に見る)
+    assert v["15m"]["verdict"] == "判定不能"          # 15分は120回以上が必要
     assert v["5m"]["verdict"] == "不合格"
-    assert v["1m"]["verdict"] == "不合格"            # 隣の 5分の後半 PF 0.85 < 0.9
+    assert v["1m"]["verdict"] == "不合格"            # 隣の 5分の PF 0.85 < 0.9
     assert any("基準7" in x for x in v["1m"]["fails"])
+
+
+@pytest.mark.parametrize("tf, trades_ok, trades_ng, pf_ok, pf_ng", [
+    ("1m", 300, 299, 1.30, 1.29), ("5m", 200, 199, 1.35, 1.34),
+    ("15m", 120, 119, 1.40, 1.39), ("1h", 60, 59, 1.50, 1.49)])
+def test_criteria_1_2_change_by_timeframe(tf, trades_ok, trades_ng, pf_ok, pf_ng):
+    def one(trades, pf):
+        rows = [_row(tf, (100, trades, pf, pf, 0.05, 0.3, 1.5))]
+        bt.judge(rows)
+        return rows[0]
+    assert one(trades_ok, pf_ok)["verdict"] == "合格"
+    assert one(trades_ng, pf_ok)["verdict"] == "判定不能"
+    r = one(trades_ok, pf_ng)
+    assert r["verdict"] == "不合格" and any("基準2" in x for x in r["fails"])
 
 
 def test_judge_pass_and_each_criterion():
     rows = [_row("1m", (100, 400, 1.6, 1.5, 0.05, 0.3, 1.5))]
     bt.judge(rows)
     assert rows[0]["verdict"] == "合格"            # 隣(5分)が無いので基準7は適用しない
-    for bad, key in [((100, 400, 2.1, 1.5, 0.05, 0.3, 1.5), "基準3"), ((100, 400, 1.6, 1.29, 0.05, 0.3, 1.5), "基準2"),
+    for bad, key in [((100, 400, 2.1, 1.5, 0.05, 0.3, 1.5), "基準3"),
                      ((100, 400, 1.6, 1.5, 0.11, 0.3, 1.5), "基準4"), ((100, 400, 1.6, 1.5, 0.05, 0.41, 1.5), "基準5"),
-                     ((100, 400, 1.6, 1.5, 0.05, 0.3, 0.99), "基準6")]:
+                     ((100, 400, 1.6, 1.5, 0.05, None, 1.5), "基準5"), ((100, 400, 1.6, 1.5, 0.05, 0.3, 0.99), "基準6")]:
         rows = [_row("1m", bad)]
         bt.judge(rows)
         assert rows[0]["verdict"] == "不合格" and any(key in x for x in rows[0]["fails"])
+
+
+def test_preliminary_judge():
+    """予備判定: 基準3(前半との差)は使わず、後半90日の確認もしない。結果に「予備」が付く。"""
+    rows = [_row("1m", (10, 400, None, 1.5, 0.05, 0.3, 1.5), mode="preliminary"),
+            _row("5m", (10, 400, None, 1.0, 0.05, 0.3, 1.5), mode="preliminary"),
+            _row("15m", (10, 5, None, 3.0, 0.05, 0.3, 1.5), mode="preliminary")]
+    bt.judge(rows)
+    v = {r["tf"]: r["verdict"] for r in rows}
+    assert v == {"1m": "予備合格", "5m": "予備不合格", "15m": "判定不能"}
 
 
 def _random_db(path, days=3, seed=5):
@@ -136,6 +159,7 @@ def test_reproducible(tmp_path, monkeypatch):
     _random_db(tmp_path / "m.db")
     small = {"rci_slope_min": [10, 20], "rci14_max": [-40], "macd_lookback": [3, 5],
              "stop_atr": [1.0], "take_atr": [2.0]}
+    monkeypatch.setattr(bt, "MIN_TRADES", {"1m": 1, "5m": 1, "15m": 1, "1h": 1})
     real = config.strategy
 
     def cfg():
@@ -145,10 +169,67 @@ def test_reproducible(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "strategy", cfg)
     outs = []
     for k in range(2):
-        rows = bt.run(coin="BTC", tf="1m", db_path=tmp_path / "m.db", out_dir=tmp_path / f"r{k}",
+        rows = bt.run(mode="formal", coin="BTC", tf="1m", db_path=tmp_path / "m.db", out_dir=tmp_path / f"r{k}",
                       memo_dir=tmp_path / f"m{k}", date="test")
-        outs.append([(r["params"], r["second"]["trades"], round(r["second"]["pf"] or 0, 6),
-                      [round(t["net"], 6) for t in r["second_trades"]]) for r in rows])
-        assert (tmp_path / f"r{k}" / "judgement_test_1m_BTC_all.md").exists()
+        outs.append([(r["params"], r["eval"]["trades"], round(r["eval"]["pf"] or 0, 6),
+                      [round(t["net"], 6) for t in r["eval_trades"]]) for r in rows])
+        assert (tmp_path / f"r{k}" / "judgement_test_formal_1m_BTC_all.md").exists()
     assert outs[0] == outs[1]
-    assert (tmp_path / "r0" / "judgement_test_1m_BTC_all.csv").read_bytes() == (tmp_path / "r1" / "judgement_test_1m_BTC_all.csv").read_bytes()
+    name = "judgement_test_formal_1m_BTC_all.csv"
+    assert (tmp_path / "r0" / name).read_bytes() == (tmp_path / "r1" / name).read_bytes()
+
+
+def _prepared_with_signals(n=3000):
+    """作り物の指標の表。合図の数を探索の組ごとに変えるため、slope9 を周期的に動かす。"""
+    ts = T0 + np.arange(n) * M
+    rng = np.random.default_rng(3)
+    close = 100 + np.cumsum(rng.normal(0, 0.05, n))
+    f = pd.DataFrame({"ts_open": ts, "close_ms": ts + M, "open": close, "high": close + 0.2, "low": close - 0.2,
+                      "close": close, "slope9": (np.arange(n) % 40).astype(float), "atr": 0.5,
+                      "sma5": close - 1, "sma75": close - 1, "upper_sma25_up": True, "psar_bull": True,
+                      "psar_bear": False, "gc_neg": np.arange(n) % 7 == 0, "rci14_prev": -80.0,
+                      "rci14_turn_up": False, "gap_after": False, "since_gap": np.arange(1, n + 1)})
+    return bt.Prepared("BTC", "1m", False, f, None, np.zeros(n, dtype=bool), T0, T0 + 2000 * M, T0 + n * M, 0, 2)
+
+
+def test_search_excludes_combos_below_min_trades(monkeypatch):
+    p = _prepared_with_signals()
+    cfg = config.strategy()
+    cfg["search"] = {"rci_slope_min": [10, 30], "rci14_max": [-50], "macd_lookback": [3],
+                     "stop_atr": [1.0], "take_atr": [2.0]}
+    counts = {}
+    for s in (10, 30):
+        prm = dict(cfg["initial"], rci_slope_min=s)
+        counts[s] = len(bt.run_one(p, prm, "A", p.start_ms, p.split_ms, cfg, COSTS))
+    few, many = sorted(counts, key=counts.get)
+    assert 0 < counts[few] < counts[many]
+    # 最低回数を「少ない方の回数+1」にすると、少ない方の組は候補から外れ、多い方の組が選ばれる
+    monkeypatch.setattr(bt, "MIN_TRADES", {"1m": counts[few] + 1, "5m": 1, "15m": 1, "1h": 1})
+    prm, searched = bt.search_params(p, "A", cfg, COSTS)
+    assert searched and prm["rci_slope_min"] == many
+    # どの組も届かなければ探索せず初期値
+    monkeypatch.setattr(bt, "MIN_TRADES", {"1m": counts[many] + 1, "5m": 1, "15m": 1, "1h": 1})
+    prm, searched = bt.search_params(p, "A", cfg, COSTS)
+    assert not searched and prm == cfg["initial"]
+
+
+def test_three_modes(tmp_path):
+    """frequency / preliminary / formal が、それぞれの期間と手順で動く(8.2)。"""
+    _random_db(tmp_path / "m.db", days=3)
+    out = tmp_path / "r"
+    freq = bt.run(mode="frequency", coin="BTC", tf="5m", exit_mode="A", db_path=tmp_path / "m.db",
+                  out_dir=out, memo_dir=tmp_path / "m", date="t")
+    assert set(freq[0]) >= {"signals", "signals_per_day", "fills", "fills_per_day", "removed"}
+    assert set(freq[0]["removed"]) == set(bt.strategy.CONDITIONS)
+    assert all(v >= freq[0]["signals"] for k, v in freq[0]["removed"].items() if k not in ("markA", "markB"))
+    assert (out / "judgement_t_frequency_5m_BTC_A.csv").exists()
+    pre = bt.run(mode="preliminary", coin="BTC", tf="5m", exit_mode="A", db_path=tmp_path / "m.db",
+                 out_dir=out, memo_dir=tmp_path / "m", date="t")[0]
+    assert pre["first"] is None and not pre["searched"]
+    assert pre["params"] == config.strategy()["initial"]
+    assert pre["verdict"] in ("判定不能", "予備合格", "予備不合格")
+    formal = bt.run(mode="formal", coin="BTC", tf="5m", exit_mode="A", db_path=tmp_path / "m.db",
+                    out_dir=out, memo_dir=tmp_path / "m", date="t")[0]
+    assert formal["verdict"] == "データ待ち"                   # 後半が90日に足りない
+    assert formal["split_ms"] - formal["start_ms"] == pytest.approx(0.6 * (formal["end_ms"] - formal["start_ms"]), abs=1)
+    assert (out / "judgement_t_formal_5m_BTC_A.md").exists()

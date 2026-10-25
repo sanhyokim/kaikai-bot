@@ -1,4 +1,7 @@
-"""紙上運転(仕様書 第9章)。注文は出さず、検証と同じ判断・同じ約定規則・同じコストで記録だけする。
+"""紙上運転(仕様書 第2版 第9章)。注文は出さず、検証と同じ判断・同じ約定規則・同じコストで記録だけする。
+
+対象は第1段階の24設定すべて(初期値)。正式判定で合格した設定は「選んだパラメータ」の版も足す。
+持ち玉は設定ごとに独立に1つ(7.5)。
 
 売買の判断は strategy.py の関数を呼ぶだけ。足を1本ずつ確定順に流す点も検証と同じ。
 """
@@ -33,8 +36,8 @@ CREATE TABLE IF NOT EXISTS state (
     run_id TEXT PRIMARY KEY, last_close_ms INTEGER, pending TEXT, position TEXT, safety TEXT
 );
 CREATE TABLE IF NOT EXISTS trades (
-    run_id TEXT, signal_close_ms INTEGER, entry_open_ms INTEGER, entry_price REAL,
-    exit_close_ms INTEGER, exit_price REAL, reason TEXT, bars_held INTEGER,
+    run_id TEXT, version TEXT, signal_close_ms INTEGER, entry_open_ms INTEGER, entry_price REAL,
+    mark TEXT, psar TEXT, exit_close_ms INTEGER, exit_price REAL, reason TEXT, bars_held INTEGER,
     fees REAL, slippage REAL, funding REAL, gross_no_cost REAL, net REAL,
     PRIMARY KEY (run_id, entry_open_ms)
 );
@@ -48,8 +51,8 @@ def connect(path: Path = config.PAPER_DB) -> sqlite3.Connection:
     return con
 
 
-def run_id(tf: str, coin: str, exit_mode: str) -> str:
-    return f"{tf}_{coin}_{exit_mode}"
+def run_id(tf: str, coin: str, exit_mode: str, kind: str = "初期値") -> str:
+    return f"{tf}_{coin}_{exit_mode}_{kind}"
 
 
 # ---------------------------------------------------------------- 対象の設定(9.1)
@@ -64,43 +67,50 @@ def parse_params(text: str) -> dict:
             "take_atr": float(parts[4].removeprefix("利確").removesuffix("ATR"))}
 
 
-def select_targets(judgement_csv: Path | list[Path]) -> list[dict]:
-    """合格した設定すべて。無ければ暫定設定を1つ(仕組みの確認用。昇格の対象にしない)。
-
-    暫定は、後半 PF が数字で出ている行の中で最も高いもの(9.1 は「不合格の中で」だが、
-    不合格が無い時のために全行から選ぶ)。どれも数字が無ければ判定表の先頭行(1分足・BTC・出口A)。
-    """
-    paths = judgement_csv if isinstance(judgement_csv, list) else [judgement_csv]
-    rows = []
-    for path in paths:
-        with open(path, encoding="utf-8-sig") as f:
-            rows += list(csv.DictReader(f))
-    passed = [r for r in rows if r["判定"] == "合格"]
-    if passed:
-        return [_target(r, "合格") for r in passed]
-
-    def pf(r):
-        v = r["PF_後半"]
-        return float("inf") if v == "∞" else float(v) if v not in ("-", "") else None
-    scored = [r for r in rows if pf(r) is not None]
-    pool = [r for r in scored if r["判定"] == "不合格"] or scored
-    best = max(pool, key=pf) if pool else rows[0]
-    return [_target(best, "暫定")]
-
-
-def _target(r: dict, kind: str) -> dict:
-    return {"tf": r["足"], "coin": r["銘柄"], "exit": r["出口方式"],
-            "params": parse_params(r["選んだパラメータ"]), "kind": kind}
-
-
-def latest_judgements(reports: Path = config.REPORTS_DIR) -> list[Path]:
-    """第1段階と第2段階の、それぞれ最新の判定表(1設定だけの実行の表は使わない)。"""
+def latest_formal(reports: Path = config.REPORTS_DIR) -> list[Path]:
+    """第1段階・第2段階それぞれの最新の正式判定の表(1設定だけの実行の表は使わない)。"""
     out = []
-    for pattern in ("judgement_????-??-??.csv", "judgement_????-??-??_stage2.csv"):
+    for pattern in ("judgement_????-??-??_formal.csv", "judgement_????-??-??_formal_stage2.csv"):
         files = sorted(reports.glob(pattern))
         if files:
             out.append(files[-1])
     return out
+
+
+def latest_reports(reports: Path = config.REPORTS_DIR) -> list[Path]:
+    """監視画面用: 中間報告・予備判定・正式判定のうち、段階ごとに最も新しい日付の表。"""
+    out = []
+    for suffix in ("", "_stage2"):
+        files = [f for m in ("frequency", "preliminary", "formal")
+                 for f in reports.glob(f"judgement_????-??-??_{m}{suffix}.csv")]
+        if files:
+            out.append(max(files, key=lambda f: (f.stem[10:20], f.stat().st_mtime)))
+    return out
+
+
+def formal_rows(files: list[Path]) -> dict[tuple, dict]:
+    rows = {}
+    for path in files:
+        with open(path, encoding="utf-8-sig") as f:
+            for r in csv.DictReader(f):
+                rows[(r["足"], r["銘柄"], r["出口方式"])] = r
+    return rows
+
+
+def select_targets(cfg: dict, stages: tuple[int, ...] = (1,), formal_files: list[Path] | None = None) -> list[dict]:
+    """各段階の24設定を初期値で。正式判定で合格した設定は「選んだパラメータ」の版も足す。"""
+    targets = []
+    for st in stages:
+        for info in config.coins(st):
+            for tf in config.TIMEFRAMES:
+                for ex in ("A", "B"):
+                    targets.append({"tf": tf, "coin": info["coin"], "exit": ex,
+                                    "params": dict(cfg["initial"]), "kind": "初期値"})
+    for (tf, coin, ex), r in formal_rows(formal_files or []).items():
+        if r["判定"] == "合格" and not r["選んだパラメータ"].startswith("初期値"):
+            targets.append({"tf": tf, "coin": coin, "exit": ex,
+                            "params": parse_params(r["選んだパラメータ"]), "kind": "選択"})
+    return targets
 
 
 # ---------------------------------------------------------------- 1設定の状態
@@ -112,7 +122,7 @@ class Runner:
         self.con, self.cfg, self.costs = con, cfg, costs
         self.tf, self.coin, self.exit = target["tf"], target["coin"], target["exit"]
         self.params, self.kind = target["params"], target["kind"]
-        self.id = run_id(self.tf, self.coin, self.exit)
+        self.id = run_id(self.tf, self.coin, self.exit, self.kind)
         self.hip3 = config.coin_info(self.coin)["hip3"]
         self.capital = cfg["backtest"]["capital"]
         self.max_bars = cfg["fixed"]["max_bars"][self.tf]
@@ -151,15 +161,15 @@ class Runner:
 
     def _close(self, reason: str, price: float, raw: float, close_ms: int) -> None:
         t = strategy.settle(self.pos, reason, price, raw, close_ms, self.costs, self.hip3, self.capital)
-        self.con.execute("INSERT OR REPLACE INTO trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                         (self.id, t["signal_close_ms"], t["entry_open_ms"], t["entry_price"], t["exit_close_ms"],
-                          t["exit_price"], t["reason"], t["bars_held"], t["fees"], t["slippage"], t["funding"],
-                          t["gross_no_cost"], t["net"]))
+        self.con.execute("INSERT OR REPLACE INTO trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (self.id, self.kind, t["signal_close_ms"], t["entry_open_ms"], t["entry_price"],
+                          t["mark"], t["psar"], t["exit_close_ms"], t["exit_price"], t["reason"], t["bars_held"],
+                          t["fees"], t["slippage"], t["funding"], t["gross_no_cost"], t["net"]))
         strategy.record(self.safety, t)
         self.pos = None
 
-    def step(self, f: pd.DataFrame, j: int, mask: np.ndarray, force: np.ndarray,
-             others_busy: bool, shared_position: bool) -> None:
+    def step(self, f: pd.DataFrame, j: int, mask: np.ndarray, force: np.ndarray, tags: tuple | None = None,
+             others_busy: bool = False, shared_position: bool = False) -> None:
         """確定した足 j を1本処理する。検証の simulate と同じ順番。"""
         ts_open = int(f["ts_open"].iat[j])
         close_ms = int(f["close_ms"].iat[j])
@@ -174,7 +184,8 @@ class Runner:
         if self.pending is not None:
             if strategy.fills(self.pending["limit"], low):
                 self.pos = strategy.open_position(self.pending["limit"], self.pending["atr"], self.params,
-                                                  self.max_bars, ts_open, self.pending["signal_close_ms"])
+                                                  self.max_bars, ts_open, self.pending["signal_close_ms"],
+                                                  self.pending.get("mark", ""), self.pending.get("psar", ""))
                 filled_now = True
             self.pending = None
         if self.pos is not None:
@@ -185,7 +196,9 @@ class Runner:
                 self._close(res[0], res[1], res[2], close_ms)
         if (self.pos is None and mask[j] and not (shared_position and others_busy)
                 and strategy.can_open(self.safety, close_ms)):
-            self.pending = {"limit": close, "atr": float(f["atr"].iat[j]), "signal_close_ms": close_ms}
+            self.pending = {"limit": close, "atr": float(f["atr"].iat[j]), "signal_close_ms": close_ms,
+                            "mark": str(tags[0][j]) if tags is not None else "",
+                            "psar": str(tags[1][j]) if tags is not None else ""}
         self.last_close_ms = close_ms
         self.last_bar = {"close": close, "close_ms": close_ms}
 
@@ -199,37 +212,37 @@ PAPER_MIN_PF_RATIO = 0.70
 PAPER_MAX_DD = 0.10
 
 
-def run_results(con: sqlite3.Connection, now_ms: int, judgement_csv: Path | list[Path] | None = None,
+def run_results(con: sqlite3.Connection, now_ms: int, formal_files: list[Path] | None = None,
                 capital: float = 1000.0) -> list[dict]:
-    """設定ごとの紙上の成績と、9.3 の5基準による昇格候補の印。暫定設定は候補にしない。"""
+    """設定ごとの紙上の成績と、9.3 の基準による昇格候補の印。
+
+    基準4(正式判定の後半 PF の70%以上)は、正式判定がまだ無い設定では外す。
+    基準6(正式判定で合格)は常に要る。紙上だけでは昇格しない。
+    """
     from . import backtest as bt
-    second_pf = {}
-    paths = [] if judgement_csv is None else judgement_csv if isinstance(judgement_csv, list) else [judgement_csv]
-    for path in paths:
-        if not path.exists():
-            continue
-        with open(path, encoding="utf-8-sig") as f:
-            for r in csv.DictReader(f):
-                v = r["PF_後半"]
-                second_pf[run_id(r["足"], r["銘柄"], r["出口方式"])] = (
-                    float("inf") if v == "∞" else float(v) if v not in ("-", "") else None)
+    formal = formal_rows(formal_files or [])
     out = []
-    for rid, kind, started in con.execute("SELECT run_id, kind, started_ms FROM runs ORDER BY run_id"):
+    for rid, tf, coin, ex, kind, started in con.execute(
+            "SELECT run_id, tf, coin, exit_mode, kind, started_ms FROM runs ORDER BY run_id"):
         nets = [x[0] for x in con.execute("SELECT net FROM trades WHERE run_id=? ORDER BY exit_close_ms", (rid,))]
         pf = bt.profit_factor(nets)
         dd = bt.max_drawdown(nets, capital) if nets else 0.0
         days = (now_ms - started) / DAY_MS
-        ref = second_pf.get(rid)
+        fr = formal.get((tf, coin, ex))
+        ref = None
+        if fr is not None and fr["PF_後半"] not in ("-", ""):
+            ref = float("inf") if fr["PF_後半"] == "∞" else float(fr["PF_後半"])
         checks = {
             "期間28日以上": days >= PAPER_MIN_DAYS,
             "取引50回以上": len(nets) >= PAPER_MIN_TRADES,
             "PF1.20以上": pf is not None and pf >= PAPER_MIN_PF,
-            "検証の後半PFの70%以上": pf is not None and ref is not None and pf >= PAPER_MIN_PF_RATIO * ref,
             "最大の落ち込み10%以内": dd <= PAPER_MAX_DD,
+            "正式判定で合格": fr is not None and fr["判定"] == "合格",
         }
+        if fr is not None and fr["判定"] not in ("データ待ち",):
+            checks["正式判定の後半PFの70%以上"] = pf is not None and ref is not None and pf >= PAPER_MIN_PF_RATIO * ref
         out.append({"run_id": rid, "kind": kind, "days": days, "trades": len(nets), "pf": pf,
-                    "net": sum(nets), "max_dd": dd, "checks": checks,
-                    "candidate": kind != "暫定" and all(checks.values())})
+                    "net": sum(nets), "max_dd": dd, "checks": checks, "candidate": all(checks.values())})
     return out
 
 
@@ -247,7 +260,7 @@ def features_for(df1m: pd.DataFrame, tf: str, hip3: bool, holidays: set[str]):
 
 
 def process(runners: list[Runner], market: sqlite3.Connection, now_ms: int, holidays: set[str],
-            shared_position: bool) -> None:
+            shared_position: bool = False) -> None:
     """保存庫の1分足から、各設定の新しく確定した足を時刻順に処理する。
 
     欠損の直前の手仕舞いは、紙上では「欠損が分かった時点で、直前の足の終値で」行う(検証と同じ値段)。
@@ -262,17 +275,18 @@ def process(runners: list[Runner], market: sqlite3.Connection, now_ms: int, holi
         if cache[key] is None:
             continue
         f, us_allowed, force = cache[key]
-        mask = strategy.entry_mask(f, r.params, r.cfg["fixed"]["round_number_margin"], us_allowed)
+        mask = strategy.entry_mask(f, r.params, us_allowed)
+        tags = strategy.entry_tags(f, r.params)
         close_ms = f["close_ms"].to_numpy()
         start = 0 if r.last_close_ms is None else int(np.searchsorted(close_ms, r.last_close_ms, side="right"))
         if r.last_close_ms is None:
             start = len(f) - 1           # 初回は最新の確定足から始める(過去を紙上で取引しない)
         for j in range(max(start, 0), len(f)):
-            events.append((int(close_ms[j]), r.id, r, f, j, mask, force))
+            events.append((int(close_ms[j]), r.id, r, f, j, mask, force, tags))
     events.sort(key=lambda e: (e[0], e[1]))
-    for _, _, r, f, j, mask, force in events:
-        others = any(o.busy for o in runners if o is not r)
-        r.step(f, j, mask, force, others, shared_position)
+    for _, _, r, f, j, mask, force, tags in events:
+        others = shared_position and any(o.busy for o in runners if o is not r)
+        r.step(f, j, mask, force, tags, others, shared_position)
     for r in runners:
         r.save()
 
@@ -284,28 +298,36 @@ def write_status(path: Path, **kw) -> None:
     path.write_text(json.dumps(old, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def loop(targets: list[dict], shared_position: bool = True) -> None:
+def fetch_latest(market: sqlite3.Connection, coins: list[str], now: int) -> bool:
+    """直近の1分足を取得の入口から取り直して保存庫に入れる(収集と同じ入口)。"""
+    ok = True
+    for coin in coins:
+        try:
+            last = collect.latest_ts(market, coin)
+            start = now - FETCH_BACK_MS if last is None else min(last - FETCH_BACK_MS, now - FETCH_BACK_MS)
+            rows = [x for x in exchange.candles_1m(coin, max(start, 0), now) if x["ts_open"] + MINUTE_MS <= now]
+            collect.upsert(market, coin, rows, now)
+        except exchange.ExchangeError as e:   # 3回再試行しても失敗: 警告を出し、次の足で再開(9.4)
+            ok = False
+            collect.alert(f"紙上運転: {coin} の取得に失敗: {e}")
+    return ok
+
+
+def loop(targets: list[dict], once: bool = False) -> None:
     cfg, costs, holidays = config.strategy(), config.costs(), config.us_holidays()
     market = collect.connect()
     paper = connect()
     runners = [Runner(paper, t, cfg, costs, collect.now_ms()) for t in targets]
     coins = sorted({r.coin for r in runners})
-    print("紙上運転を開始:", ", ".join(f"{r.id}({r.kind})" for r in runners))
+    print(f"紙上運転を開始: {len(runners)}設定(" + ", ".join(sorted({r.kind for r in runners})) + ")")
     while True:
         now = collect.now_ms()
-        ok = True
-        for coin in coins:
-            try:
-                last = collect.latest_ts(market, coin)
-                start = now - FETCH_BACK_MS if last is None else min(last - FETCH_BACK_MS, now - FETCH_BACK_MS)
-                rows = [x for x in exchange.candles_1m(coin, max(start, 0), now) if x["ts_open"] + MINUTE_MS <= now]
-                collect.upsert(market, coin, rows, now)
-            except exchange.ExchangeError as e:   # 3回再試行しても失敗: 警告を出し、次の足で再開(9.4)
-                ok = False
-                collect.alert(f"紙上運転: {coin} の取得に失敗: {e}")
-        process(runners, market, now, holidays, shared_position)
-        write_status(STATUS_PATH, last_loop_ms=now, last_ok=ok,
-                     runs=[{"id": r.id, "kind": r.kind, "busy": r.busy} for r in runners])
+        ok = fetch_latest(market, coins, now)
+        process(runners, market, now, holidays)
+        write_status(STATUS_PATH, last_loop_ms=now, last_ok=ok, runs=len(runners),
+                     holding=sum(1 for r in runners if r.pos is not None))
+        if once:
+            return
         time.sleep(max(5.0, 60 - (time.time() % 60) + 3))   # 毎分、足が閉じた3秒後
 
 
@@ -320,14 +342,13 @@ def watch(argv: list[str]) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description="紙上運転")
     ap.add_argument("--watch", action="store_true", help="落ちたら自動で再起動する")
+    ap.add_argument("--once", action="store_true", help="1回だけ処理して終わる(動作確認用)")
+    ap.add_argument("--stage", type=int, nargs="+", default=[1], help="対象の段階(段階5の後は 1 2)")
     a, rest = ap.parse_known_args()
     if a.watch:
         watch(rest)
         return
-    files = latest_judgements()
-    if not files:
-        raise SystemExit("判定表がありません。先に python -m kaikai_bot.backtest --stage 1 を実行してください")
-    loop(select_targets(files))
+    loop(select_targets(config.strategy(), tuple(a.stage), latest_formal()), once=a.once)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,12 @@
-"""入り口・出口・安全装置の判断(仕様書 第7章)。
+"""入り口・出口・安全装置の判断(仕様書 第7章、第2版)。
 
 売買の判断はこのファイルにだけ書く。検証(backtest)・紙上運転(paper)・本番(live)は、
 ここにある同じ関数を呼ぶだけにする(仕様書 12.1、15章3)。
 
 入力と出力の形:
 - `build_features(足, 1つ上の足, 足の種類)` で指標の表を作る。
-- `entry_mask(指標の表, パラメータ, 銘柄の情報, …)` が、各足の確定時に「買い指値を出す」かどうかを返す。
+- `entry_mask(指標の表, パラメータ, …)` が、各足の確定時に「買い指値を出す」(合図)かどうかを返す。
+- `entry_tags(指標の表, パラメータ)` が、記録だけの情報(印A/B、パラボリックの陽/陰)を返す。
 - `can_open(安全装置の状態, 時刻, …)` が、安全装置の上で新規に入ってよいかを返す。
 - `fills(指値, 次の足)` が、指値が約定したかを返す。
 - `exit_on_bar(持ち玉, 足, …)` が、その足で手仕舞うか(理由と値段)を返す。
@@ -31,38 +32,42 @@ US_ENTRY_START = 9 * 60 + 50  # 7.2: NY 9:50〜15:30 のみ新規
 US_ENTRY_END = 15 * 60 + 30
 US_FORCE_EXIT = 15 * 60 + 55  # 7.2: 15:55 までに強制手仕舞い
 
-CONDITIONS = ("c1_psar", "c2_macd", "c3_rci9", "c4_rci14", "c5_sma5", "c6_round")
+ROUND_WALL_SHARE = 0.1        # 6.6: 壁の直下 = すぐ上のキリ番まで刻み幅の1割以内
+
+# 入り口の各条件(7.3、7.4)。否決メモ・中間報告の「1つ外した時の合図回数」に使う
+CONDITIONS = ("env1", "env2", "req1", "req2", "req3", "markA", "markB")
 CONDITION_NAMES = {
-    "c1_psar": "条件1 パラボリックが陽",
-    "c2_macd": "条件2 マイナス圏のゴールデンクロス",
-    "c3_rci9": "条件3 RCI短期の急角度",
-    "c4_rci14": "条件4 RCI中期の底からの上向き",
-    "c5_sma5": "条件5 終値が5本線の上",
-    "c6_round": "条件6 上にキリのいい数字がない",
+    "env1": "環1 終値が75本線の上",
+    "env2": "環2 上の足の25本線が上向き",
+    "req1": "必1 RCI短期の急角度",
+    "req2": "必2 終値が5本線の上",
+    "req3": "必3 キリのいい数字の壁の直下でない",
+    "markA": "印A マイナス圏のゴールデンクロス",
+    "markB": "印B RCI中期の底からの上向き",
 }
 
 
 # ---------------------------------------------------------------- キリのいい数字(7.4 条件6)
 
 def round_step(price: float) -> float:
-    """キリのいい数字の刻み: 上から3桁目以降が0になる数(例 67,xxx→1,000刻み、18x→10刻み)。"""
+    """6.6 刻み幅: 10^(floor(log10(値段)) - 1)。例 67,420→1,000、2,480→100、179→10。"""
     return 10.0 ** (math.floor(math.log10(price)) - 1)
 
 
 def next_round_number(price: float) -> float:
-    """price 以上で最も近いキリのいい数字。"""
+    """price 以上で最も近い刻み幅の倍数(price ちょうどが倍数なら price)。"""
     step = round_step(price)
     k = math.ceil(price / step - 1e-9)
     return k * step
 
 
-def round_number_near(price, margin: float):
-    """入り口の値段から上に margin 以内(値段ちょうども含む)にキリのいい数字があるか。配列でも可。"""
+def below_round_wall(price):
+    """6.6 壁の直下: すぐ上のキリ番 R との差 R - p が刻み幅の1割以内。配列でも可。"""
     p = np.asarray(price, dtype=float)
     with np.errstate(divide="ignore", invalid="ignore"):
         step = 10.0 ** (np.floor(np.log10(p)) - 1)
         nxt = np.ceil(p / step - 1e-9) * step
-        out = nxt <= p * (1 + margin) * (1 + 1e-12)
+        out = (nxt - p) <= step * ROUND_WALL_SHARE * (1 + 1e-9)
     out = np.where(np.isfinite(p) & (p > 0), out, False)
     return bool(out) if out.ndim == 0 else out
 
@@ -100,15 +105,15 @@ def build_features(bars: pd.DataFrame, upper: pd.DataFrame, tf: str, upper_tf: s
     f["close_ms"] = f["ts_open"] + width
     c, h, lo = f["close"], f["high"], f["low"]
     f["sma5"] = ind.sma(c, 5)
-    sma25 = ind.sma(c, 25)
-    f["sma25_up"] = ind.rising(sma25)
+    f["sma75"] = ind.sma(c, 75)
     sar = ind.psar(h, lo, c)
-    f["psar_bull"] = ind.psar_bull(h, lo, sar)
+    f["psar_bull"] = ind.psar_bull(h, lo, sar)      # 第2版では条件に使わず記録だけ(6.2)
+    f["psar_bear"] = ind.psar_bear(h, lo, sar)
     f["gc_neg"] = ind.macd(c)["gc_neg"]
     r9 = ind.rci(c, 9)
     r14 = ind.rci(c, 14)
     f["slope9"] = r9 - r9.shift(1)
-    f["rci14"] = r14
+    f["rci14_prev"] = r14.shift(1)
     f["rci14_turn_up"] = (r14 > r14.shift(1)) & (r14.shift(1) <= r14.shift(2))
     f["atr"] = ind.atr(h, lo, c, 14)
     f["upper_sma25_up"] = _upper_rising(f["close_ms"].to_numpy(), upper, upper_tf)
@@ -136,35 +141,52 @@ def _upper_rising(close_ms: np.ndarray, upper: pd.DataFrame, upper_tf: str) -> n
     return out
 
 
-# ---------------------------------------------------------------- 入り口(7.3〜7.5)
+# ---------------------------------------------------------------- 入り口(7.3〜7.5、第2版)
 
-def entry_mask(f: pd.DataFrame, params: dict, round_margin: float, us_allowed: np.ndarray | None = None,
-               disabled: frozenset = frozenset()) -> np.ndarray:
-    """各足の確定時に買い指値を出す条件(環境フィルタ+6条件+欠損明け+時間帯)。
-
-    disabled: 否決メモの分析用に、外す条件の名前(CONDITIONS)。売買には使わない。
-    持ち玉や安全装置は見ない(それは can_open と呼び出し側の順番で扱う)。
-    """
+def entry_conditions(f: pd.DataFrame, params: dict) -> dict[str, np.ndarray]:
+    """7.3 環境フィルタと 7.4 入り口の各条件を、足ごとの真偽で返す。"""
     lb = int(params["macd_lookback"])
     gc_recent = f["gc_neg"].astype(float).rolling(lb, min_periods=1).max().fillna(0).astype(bool)
-    cond = {
-        "c1_psar": f["psar_bull"].to_numpy(),
-        "c2_macd": gc_recent.to_numpy(),
-        "c3_rci9": (f["slope9"] >= params["rci_slope_min"]).to_numpy(),
-        "c4_rci14": ((f["rci14"] <= params["rci14_max"]) & f["rci14_turn_up"]).to_numpy(),
-        "c5_sma5": (f["close"] > f["sma5"]).to_numpy(),
-        "c6_round": ~round_number_near(f["close"].to_numpy(), round_margin),
+    return {
+        "env1": (f["close"] > f["sma75"]).to_numpy(),
+        "env2": f["upper_sma25_up"].to_numpy(dtype=bool),
+        "req1": (f["slope9"] >= params["rci_slope_min"]).to_numpy(),
+        "req2": (f["close"] > f["sma5"]).to_numpy(),
+        "req3": ~below_round_wall(f["close"].to_numpy()),
+        "markA": gc_recent.to_numpy(),
+        "markB": ((f["rci14_prev"] <= params["rci14_max"]) & f["rci14_turn_up"]).to_numpy(),
     }
-    m = (f["sma25_up"] & f["upper_sma25_up"]).to_numpy().copy()
-    for name in CONDITIONS:
-        if name not in disabled:
-            m &= cond[name]
+
+
+def entry_mask(f: pd.DataFrame, params: dict, us_allowed: np.ndarray | None = None,
+               disabled: frozenset = frozenset()) -> np.ndarray:
+    """各足の確定時に買い指値を出す(合図)か。環1・環2・必1〜3 すべてと、印A か印B の1つ以上。
+
+    加えて ATR が計算できること、欠損明け10本でないこと、次の足が欠けていないこと、米国株は時間帯。
+    disabled: 中間報告・否決メモの分析用に「課さない」条件の名前(CONDITIONS)。課さない条件は満たした扱い
+    (印を課さないと印のどちらか1つ以上という条件も満たされる)。売買には使わない。
+    持ち玉や安全装置は見ない(それは can_open と呼び出し側の順番で扱う)。
+    """
+    c = entry_conditions(f, params)
+    n = len(f)
+    ok = {k: (np.ones(n, dtype=bool) if k in disabled else v) for k, v in c.items()}
+    m = ok["env1"] & ok["env2"] & ok["req1"] & ok["req2"] & ok["req3"] & (ok["markA"] | ok["markB"])
     m &= f["atr"].notna().to_numpy()
     m &= f["since_gap"].to_numpy() > COOLDOWN_BARS
     m &= ~f["gap_after"].to_numpy()          # 次の足が欠けていたら約定を見られない
     if us_allowed is not None:
         m &= us_allowed
     return m
+
+
+def entry_tags(f: pd.DataFrame, params: dict) -> tuple[np.ndarray, np.ndarray]:
+    """記録だけの情報(7.4)を足ごとに返す: どの印で入ったか(A / B / 両方)と、パラボリックの陽/陰。"""
+    c = entry_conditions(f, params)
+    a, b = c["markA"], c["markB"]
+    mark = np.where(a & b, "両方", np.where(a, "A", np.where(b, "B", "なし")))
+    bull, bear = f["psar_bull"].to_numpy(dtype=bool), f["psar_bear"].to_numpy(dtype=bool)
+    psar = np.where(bull, "陽", np.where(bear, "陰", "どちらでもない"))
+    return mark, psar
 
 
 def fills(limit_price: float, next_low: float) -> bool:
@@ -184,15 +206,17 @@ class Position:
     atr: float
     max_bars: int
     bars_held: int = 0
+    mark: str = ""            # 記録だけ: どの印で入ったか
+    psar: str = ""            # 記録だけ: 入った時のパラボリック
 
 
 def open_position(limit_price: float, atr: float, params: dict, max_bars: int,
-                  entry_open_ms: int, signal_close_ms: int) -> Position:
-    """入値と ATR(入った時点で固定)から損切り・利確の値段を決める。"""
+                  entry_open_ms: int, signal_close_ms: int, mark: str = "", psar: str = "") -> Position:
+    """入値と ATR(足 t の値で固定)から損切り・利確の値段を決める。"""
     return Position(entry_price=limit_price, entry_open_ms=entry_open_ms, signal_close_ms=signal_close_ms,
                     stop=limit_price - atr * params["stop_atr"],
                     take=limit_price + atr * params["take_atr"],
-                    atr=atr, max_bars=max_bars)
+                    atr=atr, max_bars=max_bars, mark=mark, psar=psar)
 
 
 def exit_on_bar(pos: Position, high: float, low: float, close: float, slope9: float,
@@ -240,6 +264,8 @@ def settle(pos: Position, reason: str, exit_price: float, raw_exit_price: float,
         "take": pos.take,
         "reason": reason,
         "bars_held": pos.bars_held,
+        "mark": pos.mark,
+        "psar": pos.psar,
         "fees": entry_fee + exit_fee,
         "slippage": slippage,
         "funding": funding,

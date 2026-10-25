@@ -20,16 +20,18 @@ python -m kaikai_bot.collect
 ```
 
 ```
-# 検証
-python -m kaikai_bot.backtest --stage 1
+# 検証(データの日数に応じて)
+python -m kaikai_bot.backtest --stage 1 --mode frequency      # 30日: 中間報告(合図の頻度)
+python -m kaikai_bot.backtest --stage 1 --mode preliminary    # 90日: 予備判定(初期値のまま)
+python -m kaikai_bot.backtest --stage 1 --mode formal         # 225日〜: 正式判定
 ```
 
 ```
-# 紙上運転(常駐)
+# 紙上運転(常駐・24設定)
 python -m kaikai_bot.paper
 ```
 
-(落ちたら自動で起動し直したい時は `python -m kaikai_bot.paper --watch`。紙上運転の前に `python -m kaikai_bot.collect --from-github` と `python -m kaikai_bot.backtest --stage 1` を一度実行しておく。)
+(落ちたら自動で起動し直したい時は `python -m kaikai_bot.paper --watch`。最初に一度 `python -m kaikai_bot.collect --from-github` で過去の足を取り込んでおくと、1時間足などもすぐ判断を始められる。段階5の後は `--stage 1 2` で48設定。)
 
 ```
 # 監視画面
