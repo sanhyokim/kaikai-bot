@@ -27,11 +27,11 @@ python -m kaikai_bot.backtest --stage 1 --mode formal         # 225日〜: 正�
 ```
 
 ```
-# 紙上運転(常駐・24設定)
+# 紙上運転(常駐・第1段階と第2段階の48設定)
 python -m kaikai_bot.paper
 ```
 
-(落ちたら自動で起動し直したい時は `python -m kaikai_bot.paper --watch`。最初に一度 `python -m kaikai_bot.collect --from-github` で過去の足を取り込んでおくと、1時間足などもすぐ判断を始められる。段階5の後は `--stage 1 2` で48設定。)
+(落ちたら自動で起動し直したい時は `python -m kaikai_bot.paper --watch`。最初に一度 `python -m kaikai_bot.collect --from-github` で過去の足を取り込んでおくと、1時間足などもすぐ判断を始められる。第1段階の24設定だけなら `--stage 1`。)
 
 ```
 # 監視画面

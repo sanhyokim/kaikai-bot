@@ -1,6 +1,6 @@
 """紙上運転(仕様書 第2版 第9章)。注文は出さず、検証と同じ判断・同じ約定規則・同じコストで記録だけする。
 
-対象は第1段階の24設定すべて(初期値)。正式判定で合格した設定は「選んだパラメータ」の版も足す。
+対象は第1段階・第2段階の24設定ずつ、計48設定(初期値)。正式判定で合格した設定は「選んだパラメータ」の版も足す。
 持ち玉は設定ごとに独立に1つ(7.5)。
 
 売買の判断は strategy.py の関数を呼ぶだけ。足を1本ずつ確定順に流す点も検証と同じ。
@@ -345,7 +345,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="紙上運転")
     ap.add_argument("--watch", action="store_true", help="落ちたら自動で再起動する")
     ap.add_argument("--once", action="store_true", help="1回だけ処理して終わる(動作確認用)")
-    ap.add_argument("--stage", type=int, nargs="+", default=[1], help="対象の段階(段階5の後は 1 2)")
+    ap.add_argument("--stage", type=int, nargs="+", default=[1, 2],
+                    help="対象の段階(既定は第1・第2段階の48設定。第1段階だけなら 1)")
     a, rest = ap.parse_known_args()
     if a.watch:
         watch(rest)
