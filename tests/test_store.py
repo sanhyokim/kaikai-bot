@@ -36,3 +36,42 @@ def test_store_roundtrip(tmp_path, monkeypatch):
     assert n == 1450
     row = con.execute("SELECT close, trades FROM candles_1m WHERE ts_open=?", (T0,)).fetchone()
     assert row == (1.25, 4)
+
+
+def test_pull_from_github_brings_paper(tmp_path, monkeypatch):
+    """パソコンへの取り込みで、GitHub の紙上運転の記録と状態も入る。"""
+    import io
+    import json
+    import zipfile
+
+    import requests
+    from kaikai_bot import paper
+
+    src = paper.connect(tmp_path / "src.db")
+    src.execute("INSERT INTO runs VALUES ('5m_BTC_A_初期値','5m','BTC','A','{}','初期値',0)")
+    src.commit()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("kaikai-bot-data/candles/BTC/2026-01-01.csv",
+                   ",".join(collect.STORE_COLUMNS) + f"\n{T0},1.0,2.0,0.5,1.25,3.0,4,0\n")
+        for t, text in paper.dump_tables(src).items():
+            z.writestr(f"kaikai-bot-data/paper/{t}.jsonl", text)
+        z.writestr("kaikai-bot-data/paper/status.json", json.dumps({"runs": 1}))
+        z.writestr("kaikai-bot-data/alerts.log", "t\tx\n")
+
+    class R:
+        content = buf.getvalue()
+
+        def raise_for_status(self):
+            pass
+    monkeypatch.setattr(requests, "get", lambda *a, **k: R())
+    monkeypatch.setattr(collect.config, "LOGS_DIR", tmp_path / "logs")
+    monkeypatch.setattr(collect.config, "ALERTS_LOG", tmp_path / "logs" / "alerts.log")
+    monkeypatch.setattr(collect.config, "GAPS_LOG", tmp_path / "gaps.log")
+    monkeypatch.setattr(collect.config, "COLLECT_STATUS", tmp_path / "logs" / "collect_status.json")
+    n = collect.pull_from_github(tmp_path / "m.db", paper_db=tmp_path / "p.db")
+    assert n == 1
+    got = paper.connect(tmp_path / "p.db").execute("SELECT run_id FROM runs").fetchall()
+    assert got == [("5m_BTC_A_初期値",)]
+    assert json.loads((tmp_path / "logs" / "paper_status.json").read_text()) == {"runs": 1}
+    assert (tmp_path / "logs" / "alerts.log").read_text() == "t\tx\n"

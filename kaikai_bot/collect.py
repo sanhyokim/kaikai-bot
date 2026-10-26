@@ -232,14 +232,19 @@ def run_store(store: Path, fetch=exchange.candles_1m) -> dict:
     return status
 
 
-def pull_from_github(db_path: Path = config.MARKET_DB, url: str = STORE_ZIP_URL) -> int:
-    """パソコン用: GitHub の data 枝を丸ごと取ってきて保存庫に取り込む。"""
+def pull_from_github(db_path: Path = config.MARKET_DB, url: str = STORE_ZIP_URL,
+                     paper_db: Path = config.PAPER_DB) -> int:
+    """パソコン用: GitHub の data 枝を丸ごと取ってきて保存庫に取り込む。紙上運転の記録と状態も一緒に取り込む。"""
     import requests
     r = requests.get(url, timeout=120)
     r.raise_for_status()
     con = connect(db_path)
     total = 0
     names = {coin_dir(i["coin"]): i["coin"] for i in config.coins()}
+    copies = {("", "gaps.log"): config.GAPS_LOG, ("", "alerts.log"): config.ALERTS_LOG,
+              ("", "collect_status.json"): config.COLLECT_STATUS,
+              ("paper", "status.json"): config.LOGS_DIR / "paper_status.json"}
+    paper_texts = {}
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:
         for name in sorted(z.namelist()):
             parts = name.split("/")
@@ -247,10 +252,19 @@ def pull_from_github(db_path: Path = config.MARKET_DB, url: str = STORE_ZIP_URL)
                 coin = names.get(parts[-2])
                 if coin:
                     total += import_csv_text(con, coin, z.read(name).decode("utf-8"))
-            elif parts[-1] == "gaps.log":
-                config.GAPS_LOG.parent.mkdir(parents=True, exist_ok=True)
-                config.GAPS_LOG.write_bytes(z.read(name))
+            elif len(parts) >= 3 and parts[-2] == "paper" and parts[-1].endswith(".jsonl"):
+                paper_texts[parts[-1].removesuffix(".jsonl")] = z.read(name).decode("utf-8")
+            else:
+                dest = copies.get((parts[-2] if len(parts) >= 3 else "", parts[-1]))
+                if dest is not None:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(z.read(name))
     con.close()
+    if paper_texts:       # GitHub で動かしている紙上運転の記録で、このパソコンの paper.db を置き換える
+        from . import paper
+        pcon = paper.connect(paper_db)
+        paper.load_tables(pcon, paper_texts)
+        pcon.close()
     return total
 
 

@@ -126,3 +126,57 @@ def test_run_results_candidate(tmp_path):
     res = {r["run_id"]: r for r in paper.run_results(con, 29 * day, [])}
     assert "正式判定の後半PFの70%以上" not in res["5m_BTC_A_初期値"]["checks"]
     assert not res["5m_BTC_A_初期値"]["candidate"]
+
+
+@pytest.mark.parametrize("exit_mode, gap", [("A", False), ("B", True)])
+def test_paper_on_github_matches_backtest(tmp_path, monkeypatch, exit_mode, gap):
+    """GitHub の自動実行で1時間ごとにまとめて処理しても、検証と同じ取引になる(ボス決定 2026-10-26)。"""
+    monkeypatch.setattr(strategy, "entry_mask", fake_mask)
+    n = 2 * 1440
+    rows = _rows(n, seed=5)
+    if gap:
+        rows = [r for r in rows if not (1500 <= (r["ts_open"] - T0) // M < 1517)]
+    tf = "5m"
+    cfg, costs = config.strategy(), config.costs()
+    full = collect.connect(tmp_path / "full.db")
+    collect.upsert(full, "BTC", rows, 0)
+    p = bt.prepare(bt.candles.load_1m(full, "BTC"), "BTC", tf, False, set())
+    start_close = T0 + 600 * M
+    expected = bt.simulate(p, fake_mask(p.features, PRM), PRM, exit_mode, start_close, p.end_ms,
+                           costs, cfg["fixed"], 1000.0)
+    assert len(expected) >= 5
+
+    target = {"tf": tf, "coin": "BTC", "exit": exit_mode, "params": PRM, "kind": "初期値"}
+    monkeypatch.setattr(paper, "select_targets", lambda *a, **k: [dict(target)])
+    store = tmp_path / "store"
+    collected = collect.connect(tmp_path / "collected.db")
+    for now in [start_close] + list(range(T0 + 660 * M, T0 + n * M + 1, 60 * M)):
+        new = [r for r in rows if r["ts_open"] + M <= now]
+        collect.upsert(collected, "BTC", new, 0)
+        days = {r["ts_open"] // collect.DAY_MS * collect.DAY_MS for r in new}
+        collect.export_days(collected, "BTC", days, store)
+        paper.run_store(store, now=now)
+    assert not (store / "paper_work").exists()
+    pcon = paper.connect(tmp_path / "back.db")
+    paper.load_tables(pcon, {t: (store / "paper" / f"{t}.jsonl").read_text(encoding="utf-8")
+                             for t in paper.TABLES})
+    got = pcon.execute("SELECT entry_open_ms, exit_close_ms, reason, net FROM trades ORDER BY entry_open_ms").fetchall()
+    want = [(t["entry_open_ms"], t["exit_close_ms"], t["reason"], t["net"]) for t in expected]
+    assert [g[:3] for g in got] == [w[:3] for w in want]
+    np.testing.assert_allclose([g[3] for g in got], [w[3] for w in want], rtol=0, atol=1e-9)
+
+
+def test_tables_roundtrip(tmp_path):
+    a = paper.connect(tmp_path / "a.db")
+    a.execute("INSERT INTO runs VALUES ('1m_BTC_A_初期値','1m','BTC','A','{\"x\": 1}','初期値',5)")
+    a.execute("INSERT INTO state VALUES ('1m_BTC_A_初期値', 7, NULL, '{\"y\": 2}', '{}')")
+    a.execute("INSERT INTO trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+              ("1m_BTC_A_初期値", "初期値", 1, 2, 0.1 + 0.2, "A", "陽", 3, 4.5, "take", 1, 0.01, 0.0, -0.002, 1.5, 1.4))
+    a.commit()
+    texts = paper.dump_tables(a)
+    b = paper.connect(tmp_path / "b.db")
+    b.execute("INSERT INTO runs VALUES ('古い','1m','BTC','A','{}','初期値',0)")
+    paper.load_tables(b, texts)
+    for t in paper.TABLES:
+        assert a.execute(f"SELECT * FROM {t}").fetchall() == b.execute(f"SELECT * FROM {t}").fetchall()
+    assert paper.dump_tables(b) == texts

@@ -4,6 +4,7 @@
 持ち玉は設定ごとに独立に1つ(7.5)。
 
 売買の判断は strategy.py の関数を呼ぶだけ。足を1本ずつ確定順に流す点も検証と同じ。
+普段は GitHub の自動実行で、収集の直後に1時間ぶんをまとめて処理する(`--store`、ボス決定 2026-10-26)。
 """
 from __future__ import annotations
 
@@ -333,6 +334,63 @@ def loop(targets: list[dict], once: bool = False) -> None:
         time.sleep(max(5.0, 60 - (time.time() % 60) + 3))   # 毎分、足が閉じた3秒後
 
 
+# ---------------------------------------------------------------- GitHub の自動実行(ボス決定 2026-10-26)
+# 収集の直後に、data 枝の1分足から新しく確定した足をまとめて処理する。
+# 状態と取引は data 枝の paper/<表>.jsonl に1行1件で置き、次の回に読み戻す。
+
+TABLES = {"runs": "run_id", "state": "run_id", "trades": "run_id, entry_open_ms"}
+
+
+def dump_tables(con: sqlite3.Connection) -> dict[str, str]:
+    out = {}
+    for table, order in TABLES.items():
+        cur = con.execute(f"SELECT * FROM {table} ORDER BY {order}")
+        cols = [c[0] for c in cur.description]
+        out[table] = "".join(json.dumps(dict(zip(cols, r)), ensure_ascii=False) + "\n" for r in cur)
+    return out
+
+
+def load_tables(con: sqlite3.Connection, texts: dict[str, str]) -> None:
+    """dump_tables で書いた内容で表を置き換える。"""
+    for table in TABLES:
+        con.execute(f"DELETE FROM {table}")
+        rows = [json.loads(x) for x in texts.get(table, "").splitlines() if x.strip()]
+        if rows:
+            cols = list(rows[0])
+            con.executemany(f"INSERT INTO {table} ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+                            [[r[c] for c in cols] for r in rows])
+    con.commit()
+
+
+def run_store(store: Path, stages: tuple[int, ...] = (1, 2), now: int | None = None) -> None:
+    now = collect.now_ms() if now is None else now
+    cfg, costs, holidays = config.strategy(), config.costs(), config.us_holidays()
+    work = store / "paper_work"
+    work.mkdir(parents=True, exist_ok=True)
+    for f in work.glob("*.db"):
+        f.unlink()
+    market = collect.connect(work / "market.db")
+    collect.import_store(market, store, since_ms=now - (WINDOW_DAYS + 1) * DAY_MS)
+    pdir = store / "paper"
+    pcon = connect(work / "paper.db")
+    load_tables(pcon, {t: (pdir / f"{t}.jsonl").read_text(encoding="utf-8")
+                       for t in TABLES if (pdir / f"{t}.jsonl").exists()})
+    runners = [Runner(pcon, t, cfg, costs, now) for t in select_targets(cfg, stages, latest_formal())]
+    resumed = sum(1 for r in runners if r.last_close_ms is not None)
+    process(runners, market, now, holidays)
+    pdir.mkdir(parents=True, exist_ok=True)
+    for table, text in dump_tables(pcon).items():
+        (pdir / f"{table}.jsonl").write_text(text, encoding="utf-8")
+    write_status(pdir / "status.json", last_loop_ms=now, last_ok=True, runs=len(runners),
+                 holding=sum(1 for r in runners if r.pos is not None))
+    market.close()
+    pcon.close()
+    for f in work.glob("*.db"):
+        f.unlink()
+    work.rmdir()
+    print(f"紙上運転: {len(runners)}設定" + (f"(うち{resumed}設定は前回の続きから)" if resumed else "(新しく開始)"))
+
+
 def watch(argv: list[str]) -> None:
     """落ちたら自動で起動し直す小さな見張り(9.4)。"""
     while True:
@@ -347,7 +405,11 @@ def main() -> None:
     ap.add_argument("--once", action="store_true", help="1回だけ処理して終わる(動作確認用)")
     ap.add_argument("--stage", type=int, nargs="+", default=[1, 2],
                     help="対象の段階(既定は第1・第2段階の48設定。第1段階だけなら 1)")
+    ap.add_argument("--store", type=Path, help="GitHub の自動実行用: data 枝の保管庫で1回分を処理する")
     a, rest = ap.parse_known_args()
+    if a.store:
+        run_store(a.store, tuple(a.stage))
+        return
     if a.watch:
         watch(rest)
         return

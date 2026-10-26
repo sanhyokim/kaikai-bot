@@ -26,12 +26,9 @@ python -m kaikai_bot.backtest --stage 1 --mode preliminary    # 90日: 予備判
 python -m kaikai_bot.backtest --stage 1 --mode formal         # 225日〜: 正式判定
 ```
 
-```
-# 紙上運転(常駐・第1段階と第2段階の48設定)
-python -m kaikai_bot.paper
-```
-
-(落ちたら自動で起動し直したい時は `python -m kaikai_bot.paper --watch`。最初に一度 `python -m kaikai_bot.collect --from-github` で過去の足を取り込んでおくと、1時間足などもすぐ判断を始められる。第1段階の24設定だけなら `--stage 1`。)
+紙上運転(第1・第2段階の48設定)は、収集と同じ GitHub の自動実行で1時間ごとに動いています(ボス決定 2026-10-26)。
+パソコンでは何も動かさなくて大丈夫です。記録は `python -m kaikai_bot.collect --from-github` で1分足と一緒に取り込まれ、監視画面で見られます。
+(パソコンで常駐させる `python -m kaikai_bot.paper` も残してありますが、GitHub と両方動かすと記録が二重になるので使いません。)
 
 ```
 # 監視画面
@@ -46,10 +43,10 @@ python -m kaikai_bot.live --coin BTC --tf 15m --exit A --capital 100
 ## データ収集を1時間ごとに自動で動かす
 
 取得の入口は1分足を直近約3.6日分しか返しません。止まっている間のデータは二度と取れないので、
-収集は GitHub の自動実行で1時間ごとに動かし、リポジトリの `data` 枝に「銘柄/日付.csv」で貯めています(ボス決定 2026-10-25)。
+収集は GitHub の自動実行で1時間ごとに動かし、リポジトリの `data` 枝に「銘柄/日付.csv」で貯めています(ボス決定 2026-10-25)。続けて紙上運転も動き、記録を同じ枝の `paper/` に置きます。
 パソコンでは何も登録しなくて大丈夫です。
 
-検証や紙上運転の前に、貯まった分をパソコンの保存庫に取り込みます。
+検証や監視画面の前に、貯まった分(1分足・紙上運転の記録・警告)をパソコンに取り込みます。
 
 ```
 python -m kaikai_bot.collect --from-github
