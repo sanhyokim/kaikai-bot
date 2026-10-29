@@ -2,40 +2,40 @@
   "coins": {
     "BTC": {
       "consecutive_failures": 0,
-      "last_success_ms": 1793235066302,
-      "last_rows": 293,
-      "latest_ts_open": 1793235000000
+      "last_success_ms": 1793257174278,
+      "last_rows": 429,
+      "latest_ts_open": 1793257080000
     },
     "ETH": {
       "consecutive_failures": 0,
-      "last_success_ms": 1793235066302,
-      "last_rows": 293,
-      "latest_ts_open": 1793235000000
+      "last_success_ms": 1793257174278,
+      "last_rows": 429,
+      "latest_ts_open": 1793257080000
     },
     "SOL": {
       "consecutive_failures": 0,
-      "last_success_ms": 1793235066302,
-      "last_rows": 293,
-      "latest_ts_open": 1793235000000
+      "last_success_ms": 1793257174278,
+      "last_rows": 429,
+      "latest_ts_open": 1793257080000
     },
     "xyz:NVDA": {
       "consecutive_failures": 0,
-      "last_success_ms": 1793235066302,
-      "last_rows": 293,
-      "latest_ts_open": 1793235000000
+      "last_success_ms": 1793257174278,
+      "last_rows": 429,
+      "latest_ts_open": 1793257080000
     },
     "xyz:TSLA": {
       "consecutive_failures": 0,
-      "last_success_ms": 1793235066302,
-      "last_rows": 293,
-      "latest_ts_open": 1793235000000
+      "last_success_ms": 1793257174278,
+      "last_rows": 429,
+      "latest_ts_open": 1793257080000
     },
     "xyz:XYZ100": {
       "consecutive_failures": 0,
-      "last_success_ms": 1793235066302,
-      "last_rows": 293,
-      "latest_ts_open": 1793235000000
+      "last_success_ms": 1793257174278,
+      "last_rows": 429,
+      "latest_ts_open": 1793257080000
     }
   },
-  "last_run_ms": 1793235066302
+  "last_run_ms": 1793257174278
 }
